@@ -167,7 +167,7 @@ function comment_sort_weight_check_tables_in_sync_operation($nid) {
 
   foreach($tree as $key => $item) {
     $record = array(
-      'cid' => $item['cid'],
+      'cid' => $item->cid,
       'weight' => $key,
     );
     drupal_write_record('comment_sort_weight', $record);
@@ -224,7 +224,7 @@ function comment_sort_weight_get_tree($nid, $pid = 0) {
 
   foreach ($result as $comment) {
     if ($children = comment_sort_weight_get_tree($node, $comment->cid)) {
-      $comment['children'] = $children;
+      $comment->children = $children;
     }
 
     $tree[] = $comment;
@@ -251,7 +251,7 @@ function comment_sort_weight_get_flat_tree($nid, $tree = NULL) {
   }
 
   foreach ($tree as $item) {
-    $item_copy = $item;
+    $item_copy = clone $item;
     $item_copy->children = NULL;
     $flat[] = $item_copy;
 
