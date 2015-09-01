@@ -252,11 +252,11 @@ function comment_sort_weight_get_flat_tree($nid, $tree = NULL) {
 
   foreach ($tree as $item) {
     $item_copy = $item;
-    unset($item_copy['children']);
+    $item_copy->children = NULL;
     $flat[] = $item_copy;
 
-    if (isset($item['children'])) {
-      $flat = array_merge($flat, comment_sort_weight_get_flat_tree($nid, $item['children']));
+    if (isset($item->children) && is_array($item->children)) {
+      $flat = array_merge($flat, comment_sort_weight_get_flat_tree($nid, $item->children));
     }
   }
 
