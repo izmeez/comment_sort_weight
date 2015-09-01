@@ -16,6 +16,13 @@ define('COMMENT_SORT_WEIGHT_OLDER_FIRST', 'ASC');
 define('COMMENT_SORT_WEIGHT_NEWER_FIRST', 'DESC');
 
 /**
+ * Implements hook_views_api().
+ */
+function comment_sort_weight_views_api() {
+  return array('api' => 3);
+}
+
+/**
  * Implements hook_query_TAG_alter().
  *
  * Alter comments query to join with the comment_sort_weight table and sort
