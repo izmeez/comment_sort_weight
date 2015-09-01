@@ -49,7 +49,7 @@ function comment_sort_weight_query_comment_filter_alter(QueryAlterableInterface 
       // Get the configured default sort ordering for this node type.
       $order = variable_get('comment_sort_weight_order_' . $node->type, COMMENT_SORT_WEIGHT_OLDER_FIRST);
 
-      // To make cid a secondary criterium we have to remove it first.
+      // To make cid a secondary criterion we have to remove it first.
       if (isset($orderby['c.cid'])) {
         unset($orderby['c.cid']);
       }
