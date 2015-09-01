@@ -1,0 +1,4 @@
+name = Comment sort by weight
+description = Sorts comments and their replies by weight.
+core = 7.x
+dependencies[] = comment
