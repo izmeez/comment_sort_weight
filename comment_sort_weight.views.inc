@@ -8,7 +8,6 @@ function comment_sort_weight_views_data() {
 
   // For other base tables, explain how we join
   $data['comment_sort_weight']['table']['join'] = array(
-    // Directly links to node table.
     'comment' => array(
       'left_field' => 'cid',
       'field' => 'cid',
@@ -17,7 +16,7 @@ function comment_sort_weight_views_data() {
 
   $data['comment_sort_weight']['weight'] = array(
     'title' => t('Weight (hierarchical order)'),
-    'help' => t('weight'),
+    'help' => t('Provided by the module comment_sort_weight.'),
     'filter' => array(
       'handler' => 'views_handler_filter_numeric',
     ),

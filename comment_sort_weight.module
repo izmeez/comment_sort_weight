@@ -227,7 +227,7 @@ function comment_sort_weight_get_tree($nid, $pid = 0) {
     ->condition('pid', $pid, '=')
     ->condition('nid', $nid, '=')
     ->orderBy('created', $order)
-    ->execute();;
+    ->execute();
 
   foreach ($result as $comment) {
     if ($children = comment_sort_weight_get_tree($node, $comment->cid)) {

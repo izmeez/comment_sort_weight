@@ -19,8 +19,7 @@ function comment_sort_weight_schema() {
         'description' => 'Primary Key: Unique comment ID.',
       ),
       'weight' => array(
-        'type' => 'varchar',
-        'length' => 255,
+        'type' => 'int',
         'not null' => TRUE,
         'description' => "Comment weight",
       ),
