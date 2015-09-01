@@ -3,7 +3,6 @@
 /**
  * Implements hook_views_data().
  */
-
 function comment_sort_weight_views_data() {
   $data['comment_sort_weight']['table']['group']  = t('Comment');
 
