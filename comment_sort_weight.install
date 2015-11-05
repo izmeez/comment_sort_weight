@@ -40,3 +40,16 @@ function comment_sort_weight_uninstall() {
   db_delete('variable')->condition('name', 'comment_sort_weight_%', 'LIKE')->execute();
   cache_clear_all('variables', 'cache_bootstrap');
 }
+
+/**
+ * Fix type of the weight column in the database.
+ */
+function comment_sort_weight_update_7001(&$sandbox) {
+  $updated_field = array(
+    'type' => 'int',
+    'not null' => TRUE,
+    'description' => "Comment weight",
+  );
+
+  db_change_field('comment_sort_weight', 'weight', 'weight', $updated_field);
+}
