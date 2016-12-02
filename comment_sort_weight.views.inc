@@ -1,12 +1,17 @@
 <?php
 
 /**
+ * @file
+ * File name: comment_sort_weight.views.inc.
+ */
+
+/**
  * Implements hook_views_data().
  */
 function comment_sort_weight_views_data() {
   $data['comment_sort_weight']['table']['group']  = t('Comment');
 
-  // For other base tables, explain how we join
+  // For other base tables, explain how we join.
   $data['comment_sort_weight']['table']['join'] = array(
     'comment' => array(
       'left_field' => 'cid',

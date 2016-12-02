@@ -111,7 +111,8 @@ function comment_sort_weight_form_node_type_form_alter(&$form, $form_state) {
     ),
     '#options' => array(
       COMMENT_SORT_WEIGHT_OLDER_FIRST => t('Oldest first (ASC)'),
-      COMMENT_SORT_WEIGHT_NEWER_FIRST => t('Newest first (DESC)')),
+      COMMENT_SORT_WEIGHT_NEWER_FIRST => t('Newest first (DESC)'),
+    ),
     '#default_value' => variable_get('comment_sort_weight_order_' . $form['#node_type']->type, COMMENT_SORT_WEIGHT_OLDER_FIRST),
   );
 
@@ -164,7 +165,7 @@ function comment_sort_weight_check_tables_in_sync_operation($nid) {
     ->condition('nid', $nid, '=')
     ->execute();
 
-  foreach($select as $comment) {
+  foreach ($select as $comment) {
     db_delete('comment_sort_weight')
       ->condition('cid', $comment->cid)
       ->execute();
@@ -172,7 +173,7 @@ function comment_sort_weight_check_tables_in_sync_operation($nid) {
 
   $tree = comment_sort_weight_get_flat_tree($nid);
 
-  foreach($tree as $key => $item) {
+  foreach ($tree as $key => $item) {
     $record = array(
       'cid' => $item->cid,
       'weight' => $key,
@@ -188,6 +189,7 @@ function comment_sort_weight_check_tables_in_sync_operation($nid) {
  *   The node object or the node id.
  * @param int $pid
  *   The parent pid to start getting the tree from. 0 is root.
+ *
  * @return array
  *   The array tree containing the comments.
  */
@@ -200,12 +202,15 @@ function comment_sort_weight_get_tree($nid, $pid = 0) {
       return array();
     }
     $nid = $node->nid;
-  } elseif (is_object($nid)) {
+  }
+  elseif (is_object($nid)) {
     $node = $nid;
     $nid = $node->nid;
-  } elseif (is_numeric($nid)) {
+  }
+  elseif (is_numeric($nid)) {
     $node = node_load($nid);
-  } else {
+  }
+  else {
     return array();
   }
 
@@ -216,7 +221,8 @@ function comment_sort_weight_get_tree($nid, $pid = 0) {
     if ($order_reverse) {
       if ($order == COMMENT_SORT_WEIGHT_OLDER_FIRST) {
         $order = COMMENT_SORT_WEIGHT_NEWER_FIRST;
-      } else {
+      }
+      else {
         $order = COMMENT_SORT_WEIGHT_OLDER_FIRST;
       }
     }
@@ -247,6 +253,7 @@ function comment_sort_weight_get_tree($nid, $pid = 0) {
  *   The node object or the node id.
  * @param mixed $tree
  *   The tree to start getting children from.
+ *
  * @return array
  *   The flat array containing the comments.
  */
