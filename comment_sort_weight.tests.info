@@ -1,0 +1,5 @@
+[CommentSortWeightTestCase]
+name = Comment Sort Weight
+description = Tests reply ordering and permalink handling for the Comment Sort Weight module.
+group = Comment Sort Weight
+file = comment_sort_weight.test

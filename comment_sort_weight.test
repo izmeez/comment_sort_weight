@@ -1,0 +1,246 @@
+<?php
+/**
+ * @file
+ * Tests for comment_sort_weight.module.
+ *
+ * testReverseChildrenOrder() - builds a small asymmetric threaded tree. (one
+ * root with two replies, one childless root) and asserts that toggling
+ * reverse_children produces the two distinct, documented behaviors: replies
+ * always oldest-first when off, replies matching the root order when on.
+ *
+ * testPermalinkOnDisabledType() - visits a comment permalink on a content type
+ * where custom sorting is disabled and asserts a normal 200 response. This
+ * previously surfaced as a PHP warning from `array_flip()` and a "Comment could
+ * not be converted to string" fatal error, caused by passing a loaded Comment
+ * object where core expected a scalar comment ID.
+ *
+ * testPermalinkPagination() - tests that display ordinal and page calculations
+ * are correct when a node has enough comments to span multiple pager pages, and
+ * that a permalink for a comment on a later page actually lands there.
+ *
+ * Not yet covered by tests:
+ * 1. The Views integration.
+ */
+
+/**
+ * Tests comment ordering and permalink behavior for Comment Sort Weight.
+ */
+class CommentSortWeightTestCase extends BackdropWebTestCase {
+
+  /**
+   * The content type used for comment-enabled test nodes.
+   *
+   * @var string
+   */
+  protected $contentType = 'post';
+
+  /**
+   * {@inheritdoc}
+   */
+  public function setUp() {
+    parent::setUp('comment', 'comment_sort_weight');
+
+    $admin_user = $this->backdropCreateUser(array(
+      'administer content types',
+      'administer comments',
+      'post comments',
+      'skip comment approval',
+      'access comments',
+      'create post content',
+    ));
+    $this->backdropLogin($admin_user);
+  }
+
+  /**
+   * Creates a node with a given comment on it.
+   *
+   * @param string $subject
+   *   The comment subject, used to identify comments in assertions.
+   * @param int $created
+   *   The UNIX timestamp to store as the comment's created time.
+   * @param int $pid
+   *   The parent comment ID, or 0 for a root comment.
+   * @param int $nid
+   *   The node ID to attach the comment to.
+   *
+   * @return Comment
+   *   The saved comment entity.
+   */
+  protected function createComment($subject, $created, $pid, $nid) {
+    $comment = entity_create('comment', array(
+      'cid' => NULL,
+      'pid' => $pid,
+      'nid' => $nid,
+      'node_type' => $this->contentType,
+      'uid' => $this->loggedInUser->uid,
+      'subject' => $subject,
+      'created' => $created,
+      'changed' => $created,
+      'status' => COMMENT_PUBLISHED,
+      'langcode' => LANGUAGE_NONE,
+      'comment_body' => array(
+        LANGUAGE_NONE => array(array('value' => $subject)),
+      ),
+    ));
+    comment_save($comment);
+    return $comment;
+  }
+
+  /**
+   * Builds a small threaded tree with a known, asymmetric shape.
+   *
+   * Root A (newer) has two replies, A1 (newest) and A2 (older). Root B
+   * is older than root A and has no replies. This shape is enough to
+   * distinguish "children follow root order" from "children are always
+   * oldest-first" from "children match root order only when configured".
+   *
+   * @return array
+   *   Associative array of saved Comment entities, keyed by subject:
+   *   'A', 'A1', 'A2', 'B'.
+   */
+  protected function buildTestTree() {
+    $node = $this->backdropCreateNode(array('type' => $this->contentType));
+
+    $comments = array();
+    $comments['A'] = $this->createComment('A', 1000, 0, $node->nid);
+    $comments['A2'] = $this->createComment('A2', 1500, $comments['A']->cid, $node->nid);
+    $comments['A1'] = $this->createComment('A1', 2000, $comments['A']->cid, $node->nid);
+    $comments['B'] = $this->createComment('B', 500, 0, $node->nid);
+
+    return array($node, $comments);
+  }
+
+  /**
+   * Tests that reverse_children controls reply order independently of
+   * root order, per the setting's documented behavior: off means
+   * replies always stay oldest-first; on means replies follow the same
+   * order as the root comments.
+   */
+  public function testReverseChildrenOrder() {
+    list($node, $comments) = $this->buildTestTree();
+
+    // Newest-first roots, replies NOT following root order: replies
+    // should stay oldest-first (A2 before A1) regardless of root order.
+    comment_sort_weight_set_type_settings($this->contentType, array(
+      'enabled' => TRUE,
+      'order' => COMMENT_SORT_WEIGHT_NEWER_FIRST,
+      'reverse_children' => FALSE,
+    ));
+    comment_sort_weight_sync_node($node->nid);
+
+    $flat = comment_sort_weight_get_flat_tree($node);
+    $order = array();
+    foreach ($flat as $comment) {
+      $order[] = $comment->subject;
+    }
+
+    $this->assertEqual($order, array('A', 'A2', 'A1', 'B'),
+      'With reverse_children off, roots are newest-first but replies stay oldest-first. Got: ' . implode(', ', $order));
+
+    // Same root order, but now replies should follow it: A1 (newest)
+    // before A2 (older), matching the newest-first root setting.
+    comment_sort_weight_set_type_settings($this->contentType, array(
+      'enabled' => TRUE,
+      'order' => COMMENT_SORT_WEIGHT_NEWER_FIRST,
+      'reverse_children' => TRUE,
+    ));
+    comment_sort_weight_sync_node($node->nid);
+
+    $flat = comment_sort_weight_get_flat_tree($node);
+    $order = array();
+    foreach ($flat as $comment) {
+      $order[] = $comment->subject;
+    }
+
+    $this->assertEqual($order, array('A', 'A1', 'A2', 'B'),
+      'With reverse_children on, replies follow the same newest-first order as the roots. Got: ' . implode(', ', $order));
+  }
+
+  /**
+   * Tests that visiting a comment permalink on a content type where
+   * custom sorting is NOT enabled does not trigger PHP errors from
+   * passing the wrong argument type to comment_permalink().
+   *
+   * @see comment_sort_weight_permalink()
+   */
+  public function testPermalinkOnDisabledType() {
+    list($node, $comments) = $this->buildTestTree();
+
+    // Deliberately leave sorting disabled for this type; this is the
+    // exact branch that previously passed a loaded Comment object to
+    // comment_permalink() instead of the comment's scalar ID.
+    comment_sort_weight_set_type_settings($this->contentType, array(
+      'enabled' => FALSE,
+      'order' => COMMENT_SORT_WEIGHT_OLDER_FIRST,
+      'reverse_children' => FALSE,
+    ));
+
+    $this->backdropGet('comment/' . $comments['A1']->cid);
+    $this->assertResponse(200);
+
+    // The issue here surfaced as a PHP warning from array_flip() and a fatal
+    // error from binding an object to a prepared statement, both raised during
+    // this request. BackdropWebTestCase fails the test automatically if either
+    // was logged.
+  }
+
+  /**
+   * Tests that display ordinal and page calculations are correct once
+   * a node has enough comments to span multiple pager pages, and that
+   * a permalink for a comment on a later page actually lands there.
+   *
+   * @see comment_sort_weight_get_display_ordinal()
+   * @see comment_sort_weight_get_display_page()
+   * @see comment_sort_weight_permalink()
+   */
+  public function testPermalinkPagination() {
+    $node = $this->backdropCreateNode(array('type' => $this->contentType));
+
+    // Force a small, known comments-per-page so 15 root comments span 2 pages.
+    $type = node_type_get_type($this->contentType);
+    $type->settings['comment_per_page'] = 10;
+    node_type_save($type);
+
+    comment_sort_weight_set_type_settings($this->contentType, array(
+      'enabled' => TRUE,
+      'order' => COMMENT_SORT_WEIGHT_NEWER_FIRST,
+      'reverse_children' => FALSE,
+    ));
+
+    // 15 root comments with strictly increasing timestamps. Comment 15
+    // is newest, comment 1 is oldest.
+    $comments = array();
+    for ($i = 1; $i <= 15; $i++) {
+      $comments[$i] = $this->createComment('Comment ' . $i, $i * 1000, 0, $node->nid);
+    }
+
+    comment_sort_weight_sync_node($node->nid);
+
+    // Newest-first: comment 15 is first (ordinal 0, page 0).
+    $this->assertEqual(comment_sort_weight_get_display_ordinal($comments[15]->cid), 0,
+      'Newest comment has ordinal 0 under newest-first sorting.');
+    $this->assertEqual(comment_sort_weight_get_display_page($comments[15]->cid, $this->contentType), 0,
+      'Newest comment falls on page 0.');
+
+    // Comment 5 is the 11th-newest: the first entry on page 1 (ordinal 10,
+    // with comments-per-page set to 10).
+    $this->assertEqual(comment_sort_weight_get_display_ordinal($comments[5]->cid), 10,
+      'The 11th-newest comment has ordinal 10.');
+    $this->assertEqual(comment_sort_weight_get_display_page($comments[5]->cid, $this->contentType), 1,
+      'The 11th-newest comment falls on page 1, the first page boundary.');
+
+    // Comment 1 is oldest and last overall: ordinal 14, also page 1.
+    $this->assertEqual(comment_sort_weight_get_display_ordinal($comments[1]->cid), 14,
+      'Oldest comment has ordinal 14 under newest-first sorting.');
+    $this->assertEqual(comment_sort_weight_get_display_page($comments[1]->cid, $this->contentType), 1,
+      'Oldest comment falls on page 1.');
+
+    // End-to-end: the permalink for the oldest comment should redirect to a
+    // page that actually contains it.
+    $this->backdropGet('comment/' . $comments[1]->cid);
+    $this->assertResponse(200);
+    $this->assertText('Comment 1',
+      'Permalink for a comment on a later page redirects to a page that contains it.');
+  }
+
+}
