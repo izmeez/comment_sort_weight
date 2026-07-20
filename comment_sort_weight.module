@@ -1,17 +1,17 @@
 <?php
-
 /**
  * @file
- * Sorts comments by weight.
+ * Sorts comments by a precomputed weight, per content type, and keeps
+ * comment permalinks and pagination correct when that order is reversed.
  */
 
 /**
- * Default sort order: Oldest first.
+ * Sort order: oldest first (core default).
  */
 define('COMMENT_SORT_WEIGHT_OLDER_FIRST', 'ASC');
 
 /**
- * Sort order: Newest first.
+ * Sort order: newest first.
  */
 define('COMMENT_SORT_WEIGHT_NEWER_FIRST', 'DESC');
 
@@ -19,53 +19,112 @@ define('COMMENT_SORT_WEIGHT_NEWER_FIRST', 'DESC');
  * Implements hook_views_api().
  */
 function comment_sort_weight_views_api() {
-  return array('api' => 3);
+  return array(
+    'api' => 3,
+  );
+}
+
+/**
+ * Implements hook_config_info().
+ */
+function comment_sort_weight_config_info() {
+  $prefixes['comment_sort_weight.settings'] = array(
+    'label' => t('Comment Sort Weight settings'),
+    'group' => t('Configuration'),
+  );
+  return $prefixes;
+}
+
+/**
+ * Get the Comment Sort Weight settings for a single content type.
+ *
+ * @param string $type
+ *   The node type machine name.
+ *
+ * @return array
+ *   An associative array with keys 'enabled', 'order', and
+ *   'reverse_children'. Defaults are returned when the type has no
+ *   stored settings.
+ */
+function comment_sort_weight_get_type_settings($type) {
+  $defaults = array(
+    'enabled' => FALSE,
+    'order' => COMMENT_SORT_WEIGHT_OLDER_FIRST,
+    'reverse_children' => FALSE,
+  );
+
+  $types = config_get('comment_sort_weight.settings', 'types');
+  if (isset($types[$type])) {
+    return $types[$type] + $defaults;
+  }
+
+  return $defaults;
+}
+
+/**
+ * Save the Comment Sort Weight settings for a single content type.
+ *
+ * @param string $type
+ *   The node type machine name.
+ * @param array $settings
+ *   An associative array with keys 'enabled', 'order', and
+ *   'reverse_children'.
+ */
+function comment_sort_weight_set_type_settings($type, array $settings) {
+  $config = config('comment_sort_weight.settings');
+  $types = $config->get('types');
+  if (!is_array($types)) {
+    $types = array();
+  }
+  $types[$type] = $settings;
+  $config->set('types', $types);
+  $config->save();
 }
 
 /**
  * Implements hook_query_TAG_alter().
  *
- * Alter comments query to join with the comment_sort_weight table and sort
- * by the 'weight' column instead.
+ * Alters the comment listing query to order by the precomputed weight
+ * column instead of core's default cid/thread ordering.
+ *
+ * @see comment_get_thread()
  */
 function comment_sort_weight_query_comment_filter_alter(QueryAlterableInterface $query) {
+  if (get_class($query) != 'PagerDefault') {
+    return;
+  }
 
-  if ((get_class($query) == 'PagerDefault') && ($node = $query->getMetaData('node'))) {
+  $node = $query->getMetaData('node');
+  if (!$node) {
+    return;
+  }
 
-    // Should the order of comments for this content type be corrected?
-    if (!variable_get('comment_sort_weight_' . $node->type, FALSE)) {
-      return;
+  $settings = comment_sort_weight_get_type_settings($node->type);
+  if (!$settings['enabled']) {
+    return;
+  }
+
+  $orderby = &$query->getOrderBy();
+  $expressions = &$query->getExpressions();
+
+  // Threaded comments: replace core's thread-string ordering with our
+  // weight column, which already encodes both root order and, if
+  // configured, reply order.
+  if (isset($orderby['torder'])) {
+    unset($expressions['torder']);
+    unset($orderby['torder']);
+
+    $query->join('comment_sort_weight', 'csw', 'c.cid = csw.cid');
+    $query->orderBy('csw.weight', 'ASC');
+  }
+  // Flat comments: no hierarchy to preserve, so a straight ASC/DESC swap
+  // on the timestamp is sufficient; no join needed.
+  else {
+    if (isset($orderby['c.cid'])) {
+      unset($orderby['c.cid']);
     }
-
-    $orderby = &$query->getOrderBy();
-    $expressions = &$query->getExpressions();
-
-    // Sorting for threaded comments.
-    if (isset($orderby['torder'])) {
-      // Remove standard sorting expressions.
-      unset($expressions['torder']);
-      unset($orderby['torder']);
-
-      // Join with our table.
-      $query->join('comment_sort_weight', 'csc', 'c.cid = csc.cid');
-      $query->orderBy('weight', 'ASC');
-    }
-
-    // Sorting for flat comments.
-    else {
-      // Get the configured default sort ordering for this node type.
-      $order = variable_get('comment_sort_weight_order_' . $node->type, COMMENT_SORT_WEIGHT_OLDER_FIRST);
-
-      // To make cid a secondary criterion we have to remove it first.
-      if (isset($orderby['c.cid'])) {
-        unset($orderby['c.cid']);
-      }
-      // Now first sort after created timestamp, and if timestamps are
-      // equal, use comment id instead.
-      $orderby['c.created'] = $order;
-      $orderby['c.cid'] = $order;
-    }
-
+    $orderby['c.created'] = $settings['order'];
+    $orderby['c.cid'] = $settings['order'];
   }
 }
 
@@ -73,32 +132,35 @@ function comment_sort_weight_query_comment_filter_alter(QueryAlterableInterface 
  * Implements hook_comment_insert().
  */
 function comment_sort_weight_comment_insert($comment) {
-  comment_sort_weight_check_tables_in_sync_operation($comment->nid);
+  comment_sort_weight_sync_node($comment->nid);
 }
 
 /**
  * Implements hook_comment_update().
  */
 function comment_sort_weight_comment_update($comment) {
-  comment_sort_weight_check_tables_in_sync_operation($comment->nid);
+  comment_sort_weight_sync_node($comment->nid);
 }
 
 /**
  * Implements hook_comment_delete().
  */
 function comment_sort_weight_comment_delete($comment) {
-  comment_sort_weight_check_tables_in_sync_operation($comment->nid);
+  comment_sort_weight_sync_node($comment->nid);
 }
 
 /**
- * Implements hook_form_FORM_ID_alter().
+ * Implements hook_form_FORM_ID_alter() for node_type_form.
  */
-function comment_sort_weight_form_node_type_form_alter(&$form, $form_state) {
+function comment_sort_weight_form_node_type_form_alter(&$form, &$form_state) {
+  $type = $form['#node_type']->type;
+  $settings = comment_sort_weight_get_type_settings($type);
+
   $form['comment']['comment_sort_weight'] = array(
-    '#title' => t('Sort comments by weight?'),
-    '#description' => t('Instead of sorting by comment id, this will sort the comments by their weight (hierarchical order).'),
+    '#title' => t('Sort comments by weight'),
+    '#description' => t('Instead of sorting by comment ID, sort comments using a precomputed display order. Required for the options below to take effect.'),
     '#type' => 'checkbox',
-    '#default_value' => variable_get('comment_sort_weight_' . $form['#node_type']->type, FALSE),
+    '#default_value' => $settings['enabled'],
   );
 
   $form['comment']['comment_sort_weight_order'] = array(
@@ -110,136 +172,133 @@ function comment_sort_weight_form_node_type_form_alter(&$form, $form_state) {
       ),
     ),
     '#options' => array(
-      COMMENT_SORT_WEIGHT_OLDER_FIRST => t('Oldest first (ASC)'),
-      COMMENT_SORT_WEIGHT_NEWER_FIRST => t('Newest first (DESC)'),
+      COMMENT_SORT_WEIGHT_OLDER_FIRST => t('Oldest first'),
+      COMMENT_SORT_WEIGHT_NEWER_FIRST => t('Newest first'),
     ),
-    '#default_value' => variable_get('comment_sort_weight_order_' . $form['#node_type']->type, COMMENT_SORT_WEIGHT_OLDER_FIRST),
+    '#default_value' => $settings['order'],
   );
 
-  $form['comment']['comment_sort_weight_order_reverse'] = array(
-    '#title' => t('Reverse order for children ?'),
+  $form['comment']['comment_sort_weight_reverse_children'] = array(
+    '#title' => t('Reverse the order of replies too'),
+    '#description' => t('When off, replies under each comment keep their natural oldest-first order even if the setting above is newest-first.'),
     '#type' => 'checkbox',
     '#states' => array(
       'visible' => array(
         ':input[name="comment_sort_weight"]' => array('checked' => TRUE),
       ),
     ),
-    '#default_value' => variable_get('comment_sort_weight_order_reverse_' . $form['#node_type']->type, FALSE),
+    '#default_value' => $settings['reverse_children'],
   );
 
-  $form['#submit'][] = 'comment_sort_weight_check_tables_in_sync';
+  $form['#submit'][] = 'comment_sort_weight_node_type_form_submit';
 }
 
 /**
- * This function synchronizes the comment and comment_sort_weight tables.
+ * Form submission handler for node_type_form().
+ *
+ * Saves the per-type settings to config and rebuilds the weight table
+ * for every existing node of this type via a batch operation.
  */
-function comment_sort_weight_check_tables_in_sync($form, $form_state) {
-  $operations = array();
+function comment_sort_weight_node_type_form_submit($form, &$form_state) {
+  $type = $form['#node_type']->type;
 
-  $comments = db_select('comment', 'c')
-    ->fields('c', array('nid'))
-    ->groupBy('nid')
-    ->execute();
+  comment_sort_weight_set_type_settings($type, array(
+    'enabled' => (bool) $form_state['values']['comment_sort_weight'],
+    'order' => $form_state['values']['comment_sort_weight_order'],
+    'reverse_children' => (bool) $form_state['values']['comment_sort_weight_reverse_children'],
+  ));
 
-  foreach ($comments as $comment) {
-    $operations[] = array('comment_sort_weight_check_tables_in_sync_operation', array($comment->nid));
-  }
+  $nids = db_select('node', 'n')
+    ->fields('n', array('nid'))
+    ->condition('type', $type)
+    ->execute()
+    ->fetchCol();
 
-  $batch = array(
-    'operations' => $operations,
-    'title' => t('Filling comment sort weight table.'),
-  );
-  batch_set($batch);
-}
-
-/**
- * Batch operation callback for table sync.
- */
-function comment_sort_weight_check_tables_in_sync_operation($nid) {
-  if (is_null($nid)) {
+  if (empty($nids)) {
     return;
   }
 
-  $select = db_select('comment', 'c')
-    ->fields('c', array('cid'))
-    ->condition('nid', $nid, '=')
-    ->execute();
-
-  foreach ($select as $comment) {
-    db_delete('comment_sort_weight')
-      ->condition('cid', $comment->cid)
-      ->execute();
+  $operations = array();
+  foreach ($nids as $nid) {
+    $operations[] = array('comment_sort_weight_sync_node', array($nid));
   }
 
-  $tree = comment_sort_weight_get_flat_tree($nid);
+  batch_set(array(
+    'operations' => $operations,
+    'title' => t('Rebuilding comment display order.'),
+  ));
+}
 
-  foreach ($tree as $key => $item) {
-    $record = array(
-      'cid' => $item->cid,
-      'weight' => $key,
-    );
-    drupal_write_record('comment_sort_weight', $record);
+/**
+ * Recompute and store the display weight for every comment on a node.
+ *
+ * @param int $nid
+ *   The node ID whose comments should be resynced.
+ */
+function comment_sort_weight_sync_node($nid) {
+  if (empty($nid)) {
+    return;
+  }
+
+  db_delete('comment_sort_weight')
+    ->condition('cid', db_select('comment', 'c')
+      ->fields('c', array('cid'))
+      ->condition('nid', $nid), 'IN')
+    ->execute();
+
+  $flat = comment_sort_weight_get_flat_tree($nid);
+
+  foreach ($flat as $weight => $comment) {
+    db_merge('comment_sort_weight')
+      ->key(array('cid' => $comment->cid))
+      ->fields(array('weight' => $weight))
+      ->execute();
   }
 }
 
 /**
- * Get a tree representation of the comments of a node.
+ * Build a nested tree of a node's comments in configured display order.
  *
- * @param mixed $nid
- *   The node object or the node id.
+ * @param int|Node $node
+ *   A node ID or loaded node object.
  * @param int $pid
- *   The parent pid to start getting the tree from. 0 is root.
+ *   The parent comment ID to build children for. 0 for root comments.
  *
  * @return array
- *   The array tree containing the comments.
+ *   An array of comment objects, each with a 'children' property holding
+ *   its own nested array of replies.
  */
-function comment_sort_weight_get_tree($nid, $pid = 0) {
-  $tree = array();
-
-  if (is_null($nid)) {
-    $node = menu_get_object();
-    if (is_null($node)) {
-      return array();
-    }
-    $nid = $node->nid;
+function comment_sort_weight_get_tree($node, $pid = 0) {
+  if (is_numeric($node)) {
+    $node = node_load($node);
   }
-  elseif (is_object($nid)) {
-    $node = $nid;
-    $nid = $node->nid;
-  }
-  elseif (is_numeric($nid)) {
-    $node = node_load($nid);
-  }
-  else {
+  if (!$node) {
     return array();
   }
 
-  $order = variable_get('comment_sort_weight_order_' . $node->type, COMMENT_SORT_WEIGHT_OLDER_FIRST);
-  $order_reverse = variable_get('comment_sort_weight_order_reverse_' . $node->type, FALSE);
+  $settings = comment_sort_weight_get_type_settings($node->type);
+  $order = $settings['order'];
 
-  if ($pid != 0) {
-    if ($order_reverse) {
-      if ($order == COMMENT_SORT_WEIGHT_OLDER_FIRST) {
-        $order = COMMENT_SORT_WEIGHT_NEWER_FIRST;
-      }
-      else {
-        $order = COMMENT_SORT_WEIGHT_OLDER_FIRST;
-      }
-    }
+  // Below the root level, replies default to their natural oldest-first
+  // order regardless of the root setting. Only when reverse_children is
+  // enabled do replies follow the same order as the root comments.
+  if ($pid != 0 && !$settings['reverse_children']) {
+    $order = COMMENT_SORT_WEIGHT_OLDER_FIRST;
   }
 
   $result = db_select('comment', 'c')
     ->fields('c', array('cid'))
-    ->condition('pid', $pid, '=')
-    ->condition('nid', $nid, '=')
+    ->condition('pid', $pid)
+    ->condition('nid', $node->nid)
     ->orderBy('created', $order)
     ->execute();
 
+  $tree = array();
   foreach ($result as $comment) {
-    if ($children = comment_sort_weight_get_tree($node, $comment->cid)) {
+    $children = comment_sort_weight_get_tree($node, $comment->cid);
+    if ($children) {
       $comment->children = $children;
     }
-
     $tree[] = $comment;
   }
 
@@ -247,32 +306,159 @@ function comment_sort_weight_get_tree($nid, $pid = 0) {
 }
 
 /**
- * Transform the comments tree array into a flat array.
+ * Flatten a comment tree into display order.
  *
- * @param mixed $nid
- *   The node object or the node id.
- * @param mixed $tree
- *   The tree to start getting children from.
+ * @param int|Node $node
+ *   A node ID or loaded node object.
+ * @param array|null $tree
+ *   A tree as returned by comment_sort_weight_get_tree(). Pass NULL to
+ *   build it from $node.
  *
  * @return array
- *   The flat array containing the comments.
+ *   A flat, ordered array of comment objects (without the 'children'
+ *   property), suitable for enumerating into weight values.
  */
-function comment_sort_weight_get_flat_tree($nid, $tree = NULL) {
-  $flat = array();
-
-  if (is_null($tree)) {
-    $tree = comment_sort_weight_get_tree($nid, 0);
+function comment_sort_weight_get_flat_tree($node, $tree = NULL) {
+  if ($tree === NULL) {
+    $tree = comment_sort_weight_get_tree($node, 0);
   }
 
-  foreach ($tree as $item) {
-    $item_copy = clone $item;
-    $item_copy->children = NULL;
-    $flat[] = $item_copy;
+  $flat = array();
+  foreach ($tree as $comment) {
+    $item = clone $comment;
+    unset($item->children);
+    $flat[] = $item;
 
-    if (isset($item->children) && is_array($item->children)) {
-      $flat = array_merge($flat, comment_sort_weight_get_flat_tree($nid, $item->children));
+    if (!empty($comment->children)) {
+      $flat = array_merge($flat, comment_sort_weight_get_flat_tree($node, $comment->children));
     }
   }
 
   return $flat;
+}
+
+/**
+ * Get the 0-based display ordinal for a comment.
+ *
+ * Counts how many other comments on the same node have a lower weight
+ * than the target comment. Because the weight column already bakes in
+ * the configured sort order and reverse-children setting at write time,
+ * this needs no branching on sort direction, unlike a version derived
+ * directly from the raw thread string.
+ *
+ * @param int $cid
+ *   The comment ID.
+ *
+ * @return int
+ *   The 0-based position of this comment in its node's display order.
+ */
+function comment_sort_weight_get_display_ordinal($cid) {
+  $comment = comment_load($cid);
+  if (!$comment) {
+    return 0;
+  }
+
+  $target_weight = db_select('comment_sort_weight', 'csw')
+    ->fields('csw', array('weight'))
+    ->condition('cid', $cid)
+    ->execute()
+    ->fetchField();
+
+  // Custom sorting isn't enabled for this node's type, or the weight
+  // table hasn't been synced yet. Defer to core's own calculation.
+  if ($target_weight === FALSE) {
+    $node = node_load($comment->nid);
+    return comment_get_display_ordinal($cid, $node->type);
+  }
+
+  $query = db_select('comment', 'c');
+  $query->innerJoin('comment_sort_weight', 'csw', 'csw.cid = c.cid');
+  $query->addExpression('COUNT(*)', 'ordinal_count');
+  $query->condition('c.nid', $comment->nid);
+  $query->condition('csw.weight', $target_weight, '<');
+
+  if (!user_access('administer comments')) {
+    $query->condition('c.status', COMMENT_PUBLISHED);
+  }
+
+  return (int) $query->execute()->fetchField();
+}
+
+/**
+ * Get the pager page a comment appears on, given its display ordinal.
+ *
+ * @param int $cid
+ *   The comment ID.
+ * @param string $node_type
+ *   The node type machine name, used to look up comments-per-page.
+ *
+ * @return int
+ *   The 0-based pager page number.
+ */
+function comment_sort_weight_get_display_page($cid, $node_type) {
+  $ordinal = comment_sort_weight_get_display_ordinal($cid);
+  $type = node_type_get_type($node_type);
+  $comments_per_page = !empty($type->settings['comment_per_page'])
+    ? $type->settings['comment_per_page']
+    : 50;
+  return floor($ordinal / $comments_per_page);
+}
+
+/**
+ * Implements hook_menu_alter().
+ *
+ * Routes comment permalinks through our own callback only when custom
+ * sorting is enabled; otherwise core's own permalink logic is left
+ * untouched.
+ */
+function comment_sort_weight_menu_alter(&$items) {
+  if (isset($items['comment/%'])) {
+    $items['comment/%']['page callback'] = 'comment_sort_weight_permalink';
+  }
+}
+
+/**
+ * Page callback: redirect a comment permalink to its correct page.
+ *
+ * Uses backdrop_goto() to a plain node URL rather than munging $_GET and
+ * calling menu_execute_active_handler(), which is what core's own
+ * comment_permalink() does. That approach is known to bypass Backdrop's
+ * layout system entirely, rendering the node without blocks or layout
+ * regions (see backdrop-ops/forum.backdropcms.org#44). A real redirect
+ * avoids that class of bug.
+ *
+ * @param int $cid
+ *   The comment ID from the comment/%cid path.
+ *
+ * @return int|string
+ *   MENU_NOT_FOUND if the comment or node can't be loaded; otherwise
+ *   this function ends the request via backdrop_goto() and does not
+ *   return.
+ *
+ * @see comment_permalink()
+ */
+function comment_sort_weight_permalink($cid) {
+  $comment = comment_load($cid);
+  if (!$comment) {
+    return MENU_NOT_FOUND;
+  }
+  $node = node_load($comment->nid);
+  if (!$node) {
+    return MENU_NOT_FOUND;
+  }
+
+  $settings = comment_sort_weight_get_type_settings($node->type);
+  if (!$settings['enabled']) {
+    // Custom sorting isn't enabled for this type; defer to core, which
+    // expects the raw comment ID and loads it itself.
+    return comment_permalink($cid);
+  }
+
+  $page = comment_sort_weight_get_display_page($comment->cid, $node->type);
+  $options = array('fragment' => 'comment-' . $comment->cid);
+  if ($page > 0) {
+    $options['query'] = array('page' => $page);
+  }
+
+  backdrop_goto('node/' . $node->nid, $options);
 }

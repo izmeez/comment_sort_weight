@@ -1,4 +1,6 @@
-name = Comment sort by weight
-description = Sorts comments and their replies by weight.
-core = 7.x
+name = Comment Sort Weight
+description = Allows comments to be sorted newest or oldest first, per content type, with correct handling of threaded replies, pagination and permalinks.
+type = module
+package = Comments
+backdrop = 1.x
 dependencies[] = comment
